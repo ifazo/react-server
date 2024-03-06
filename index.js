@@ -39,7 +39,7 @@ async function run() {
   const orderCollection = db.collection("orders");
 
   app.get("/", (_req, res) => {
-    res.send("Express Mongo server is running!");
+    res.send("React server is running!");
   });
 
   app.post("/api/token", async (req, res) => {
