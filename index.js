@@ -31,7 +31,7 @@ const authMiddleware = (req, res, next) => {
 };
 
 async function run() {
-  const db = client.db("react_db");
+  const db = client.db(process.env.MONGODB_URI);
   const userCollection = db.collection("users");
   const productCollection = db.collection("products");
   const categoryCollection = db.collection("categories");
@@ -339,8 +339,8 @@ async function run() {
 
 run().catch(console.dir);
 
-const port = process.env.PORT || 5000;
+const port = process.env.PORT;
 
 app.listen(port, () => {
-  console.log(`Backend app listening on port ${port}`);
+  console.log(`React server listening on port ${port}`);
 });
