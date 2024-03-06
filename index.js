@@ -31,7 +31,7 @@ const authMiddleware = (req, res, next) => {
 };
 
 async function run() {
-  const db = client.db(process.env.MONGODB_URI);
+  const db = client.db(process.env.MONGODB_DB);
   const userCollection = db.collection("users");
   const productCollection = db.collection("products");
   const categoryCollection = db.collection("categories");
