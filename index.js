@@ -4,6 +4,7 @@ import cors from "cors";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
+import Stripe from "stripe";
 
 const app = express();
 app.use(express.json());
@@ -20,14 +21,30 @@ const client = new MongoClient(uri, {
   },
 });
 
+// This is your test secret API key.
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
+
 const authMiddleware = (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) {
-    return res.send({ error: true, message: "unauthorized access" });
+    return res.status(401).send({ error: true, message: "Unauthorized access" });
   }
   const secret = process.env.JWT_SECRET_TOKEN;
-  jwt.verify(token, secret);
-  next();
+  try {
+    jwt.verify(token, secret);
+    next();
+  } catch (error) {
+    return res.status(401).send({ error: true, message: "Invalid token" });
+  }
+};
+
+const sendResponse = (res, status, data) => {
+  res.status(status).send(data);
+};
+
+const errorHandler = (err, req, res, next) => {
+  console.error(err.message);
+  sendResponse(res, 500, { error: true, message: "Internal Server Error" });
 };
 
 async function run() {
@@ -39,14 +56,34 @@ async function run() {
   const orderCollection = db.collection("orders");
 
   app.get("/", (_req, res) => {
-    res.send("React server is running!");
+    sendResponse(res, 200, { message: "React server is running!" });
+  });
+
+  app.post("/api/payment", async (req, res) => {
+    const data = req.body;
+  
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: data.amount,
+      currency: "usd",
+      automatic_payment_methods: {
+        enabled: true,
+      },
+    });
+
+    sendResponse(res, 200, { clientSecret: paymentIntent.client_secret });
+  
+    // res.send({
+    //   clientSecret: paymentIntent.client_secret,
+    //   // [DEV]: For demo purposes only, you should avoid exposing the PaymentIntent ID in the client-side code.
+    //   // dpmCheckerLink: `https://dashboard.stripe.com/settings/payment_methods/review?transaction_id=${paymentIntent.id}`,
+    // });
   });
 
   app.post("/api/token", async (req, res) => {
     const data = req.body;
     const user = await userCollection.findOne({ email: data.email });
     if (!user) {
-      return res.status(400).send("User does not exist");
+      return sendResponse(res, 400, { error: true, message: "User does not exist" });
     }
     const payload = {
       id: user._id,
@@ -55,22 +92,21 @@ async function run() {
     };
     const JWToken = process.env.JWT_SECRET_TOKEN;
     const token = jwt.sign(payload, JWToken);
-    return res.send({ token });
+    sendResponse(res, 200, { token });
   });
 
   app.post("/api/auth/signup", async (req, res) => {
     try {
-      const data = req.body;
-      const { name, email, password } = data;
+      const { name, email, password } = req.body;
       const existingUser = await userCollection.findOne({ email });
       if (existingUser) {
-        return res.status(400).send("User already exists");
+        return sendResponse(res, 400, { error: true, message: "User already exists" });
       }
       const hashedPassword = await bcrypt.hash(password, 10);
       const user = { name, email, password: hashedPassword };
       const createUser = await userCollection.insertOne(user);
       if (!createUser) {
-        return res.status(400).send("User not created");
+        return sendResponse(res, 400, { error: true, message: "User not created" });
       }
       const payload = {
         name: user.name,
@@ -78,9 +114,9 @@ async function run() {
       };
       const JWTtoken = process.env.JWT_SECRET_TOKEN;
       const token = jwt.sign(payload, JWTtoken);
-      return res.send({ token });
+      sendResponse(res, 201, { token });
     } catch (error) {
-      console.log(error.message);
+      next(error);
     }
   });
 
@@ -89,11 +125,11 @@ async function run() {
       const { email, password } = req.body;
       const user = await userCollection.findOne({ email });
       if (!user) {
-        return res.status(400).send("User does not exist");
+        return sendResponse(res, 400, { error: true, message: "User does not exist" });
       }
       const isPasswordCorrect = await bcrypt.compare(password, user?.password);
       if (!isPasswordCorrect) {
-        return res.status(400).send("Password is incorrect");
+        return sendResponse(res, 400, { error: true, message: "Password is incorrect" });
       }
       const payload = {
         name: user.name,
@@ -101,18 +137,18 @@ async function run() {
       };
       const JWTtoken = process.env.JWT_SECRET_TOKEN;
       const token = jwt.sign(payload, JWTtoken);
-      return res.send({ token });
+      sendResponse(res, 200, { token });
     } catch (error) {
-      console.log(error.message);
+      next(error);
     }
   });
 
   app.get("/api/users", authMiddleware, async (_req, res) => {
     try {
       const users = await userCollection.find().toArray();
-      return res.send(users);
+      sendResponse(res, 200, users);
     } catch (error) {
-      console.log(error.message);
+      next(error);
     }
   });
 
@@ -124,9 +160,9 @@ async function run() {
         { _id: new ObjectId(id) },
         { $set: user }
       );
-      return res.send(result);
+      sendResponse(res, 200, result);
     } catch (error) {
-      console.log(error.message);
+      next(error);
     }
   });
 
@@ -136,64 +172,51 @@ async function run() {
       const result = await userCollection.deleteOne({
         _id: new ObjectId(id),
       });
-      return res.send(result);
+      sendResponse(res, 200, result);
     } catch (error) {
-      console.log(error.message);
+      next(error);
     }
   });
 
   app.get("/api/products", async (req, res) => {
     try {
-      const { search, brand, price, rating, skip, limit } = req.query;
+      const { search, category, price, rating, skip, limit, sort } = req.query;
 
+      let query = {};
       if (search) {
-        const products = await productCollection.find({
-          $or: [
-            { title: { $regex: search, $options: "i" } },
-            { description: { $regex: search, $options: "i" } },
-          ],
-        }).toArray();
-        return res.send(products);
+        query.$or = [
+          { title: { $regex: search, $options: "i" } },
+          { description: { $regex: search, $options: "i" } },
+        ];
+      } else if (category) {
+        query.category = category;
+      } else if (price) {
+        query.price = { $lte: parseInt(price) };
+      } else if (rating) {
+        query.rating = { $gte: parseInt(rating) };
       }
-      else if (brand) {
-        const products = await productCollection.find({
-          brand
-        }).toArray();
-        return res.send(products);
-      }
-      else if (price) {
-        const products = await productCollection.find({
-          price: { $lte: parseInt(price) }
-        }).toArray();
-        return res.send(products);
-      }
-      else if (rating) {
-        const products = await productCollection.find({
-          rating: { $gte: parseInt(rating) }
-        }).toArray();
-        return res.send(products);
-      }
-      else if (skip && limit) {
-        const products = await productCollection.find().skip(parseInt(skip)).limit(parseInt(limit)).toArray();
-        return res.send(products);
-      }
-      else {
-        const products = await productCollection.find().toArray();
-        return res.send(products);
-      }
+
+      let cursor = productCollection.find(query);
+
+      if (skip) cursor = cursor.skip(parseInt(skip));
+      if (limit) cursor = cursor.limit(parseInt(limit));
+      if (sort) cursor = cursor.sort({ title: sort === "asc" ? 1 : -1 });
+
+      const products = await cursor.toArray();
+      sendResponse(res, 200, products);
     } catch (error) {
-      console.log(error.message);
+      next(error);
     }
   });
 
   app.get("/api/products/random", async (req, res) => {
     try {
-      const products = productCollection.aggregate([
+      const products = await productCollection.aggregate([
         { $sample: { size: 10 } },
-      ]);
-      return res.send(products);
+      ]).toArray();
+      sendResponse(res, 200, products);
     } catch (error) {
-      console.log(error.message);
+      next(error);
     }
   });
 
@@ -201,9 +224,9 @@ async function run() {
     try {
       const { id } = req.params;
       const product = await productCollection.findOne({ _id: new ObjectId(id) });
-      return res.send(product);
+      sendResponse(res, 200, product);
     } catch (error) {
-      console.log(error.message);
+      next(error);
     }
   });
 
@@ -211,9 +234,9 @@ async function run() {
     try {
       const { user } = req.params;
       const products = await productCollection.find({ user }).toArray();
-      return res.send(products);
+      sendResponse(res, 200, products);
     } catch (error) {
-      console.log(error.message);
+      next(error);
     }
   });
 
@@ -227,9 +250,9 @@ async function run() {
       product.user = email;
       product.createdAt = new Date();
       const result = await productCollection.insertOne(product);
-      return res.send(result);
+      sendResponse(res, 201, result);
     } catch (error) {
-      console.log(error.message);
+      next(error);
     }
   });
 
@@ -244,16 +267,16 @@ async function run() {
       const findproduct = await productCollection.findOne({
         _id: new ObjectId(id),
       });
-      if (findBook?.email !== email) {
-        return res.send("Unauthorized access");
+      if (findproduct?.email !== email) {
+        return sendResponse(res, 403, { error: true, message: "Unauthorized access" });
       }
       const result = await productCollection.updateOne(
         { _id: new ObjectId(id) },
         { $set: product }
       );
-      return res.send(result);
+      sendResponse(res, 200, result);
     } catch (error) {
-      console.log(error.message);
+      next(error);
     }
   });
 
@@ -268,73 +291,96 @@ async function run() {
         _id: new ObjectId(id),
       });
       if (product?.user !== email) {
-        return res.send("Unauthorized access");
+        return sendResponse(res, 403, { error: true, message: "Unauthorized access" });
       }
       const result = await productCollection.deleteOne({
         _id: new ObjectId(id),
       });
-      return res.send(result);
+      sendResponse(res, 200, result);
     } catch (error) {
-      console.error(error.message);
+      next(error);
     }
   });
 
   app.get("/api/categories", async (req, res) => {
-    const categories = await categoryCollection.find().toArray();
-    return res.send(categories);
+    try {
+      const categories = await categoryCollection.find().toArray();
+      sendResponse(res, 200, categories);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get("/api/categories/:category", async (req, res) => {
-    const { category } = req.params;
-    const products = await productCollection.find({
-      category
-    }).toArray();
-    return res.send(products);
+    try {
+      const { category } = req.params;
+      const products = await productCollection.find({ category }).toArray();
+      sendResponse(res, 200, products);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get("/api/reviews/:productId", async (req, res) => {
-    const { productId } = req.params;
-    const result = await reviewCollection.find({ productId }).toArray();
-    return res.send(result);
+    try {
+      const { productId } = req.params;
+      const result = await reviewCollection.find({ productId }).toArray();
+      sendResponse(res, 200, result);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/reviews/:productId", authMiddleware, async (req, res) => {
-    const { productId } = req.params;
-    const token = req.headers.authorization?.split(" ")[1];
-    const JWTtoken = process.env.JWT_SECRET_TOKEN;
-    const decodedToken = jwt.verify(token, JWTtoken);
-    const { name, email } = decodedToken;
-    const data = req.body;
-    data.productId = productId;
-    data.name = name;
-    data.email = email;
-    data.createdAt = new Date();
-    const result = await reviewsCollection.insertOne(data);
-    return res.send(result);
+    try {
+      const { productId } = req.params;
+      const token = req.headers.authorization?.split(" ")[1];
+      const JWTtoken = process.env.JWT_SECRET_TOKEN;
+      const decodedToken = jwt.verify(token, JWTtoken);
+      const { name, email } = decodedToken;
+      const data = req.body;
+      data.productId = productId;
+      data.name = name;
+      data.email = email;
+      data.createdAt = new Date();
+      const result = await reviewCollection.insertOne(data);
+      sendResponse(res, 201, result);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get("/api/orders", authMiddleware, async (req, res) => {
-    const { user } = req.query;
-    const orders = await orderCollection.find({ user }).toArray();
-    return res.send(orders);
+    try {
+      const { user } = req.query;
+      const orders = await orderCollection.find({ user }).toArray();
+      sendResponse(res, 200, orders);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/orders", authMiddleware, async (req, res) => {
-    const data = req.body;
-    const token = req.headers.authorization?.split(" ")[1];
-    const JWTtoken = process.env.JWT_SECRET_TOKEN;
-    const decodedToken = jwt.verify(token, JWTtoken);
-    const { email } = decodedToken;
-    const user = await userCollection.findOne({ email });
-    if (!user) {
-      return res.send("User not found");
+    try {
+      const data = req.body;
+      const token = req.headers.authorization?.split(" ")[1];
+      const JWTtoken = process.env.JWT_SECRET_TOKEN;
+      const decodedToken = jwt.verify(token, JWTtoken);
+      const { email } = decodedToken;
+      const user = await userCollection.findOne({ email });
+      if (!user) {
+        return sendResponse(res, 404, { error: true, message: "User not found" });
+      }
+      data.user = email;
+      data.createdAt = new Date();
+      const result = await orderCollection.insertOne(data);
+      sendResponse(res, 201, result);
+    } catch (error) {
+      next(error);
     }
-    data.user = email;
-    data.createdAt = new Date();
-    const result = await orderCollection.insertOne(data);
-    return res.send(result);
   });
 
+  app.use(errorHandler);
 }
 
 run().catch(console.dir);
