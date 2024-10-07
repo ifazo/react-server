@@ -21,13 +21,14 @@ const client = new MongoClient(uri, {
   },
 });
 
-// This is your test secret API key.
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const authMiddleware = (req, res, next) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) {
-    return res.status(401).send({ error: true, message: "Unauthorized access" });
+    return res
+      .status(401)
+      .send({ error: true, message: "Unauthorized access" });
   }
   const secret = process.env.JWT_SECRET_TOKEN;
   try {
@@ -60,30 +61,58 @@ async function run() {
   });
 
   app.post("/api/payment", async (req, res) => {
-    const data = req.body;
-  
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: data.amount,
-      currency: "usd",
-      automatic_payment_methods: {
-        enabled: true,
-      },
-    });
+    const { products } = req.body;
 
-    sendResponse(res, 200, { clientSecret: paymentIntent.client_secret });
-  
-    // res.send({
-    //   clientSecret: paymentIntent.client_secret,
-    //   // [DEV]: For demo purposes only, you should avoid exposing the PaymentIntent ID in the client-side code.
-    //   // dpmCheckerLink: `https://dashboard.stripe.com/settings/payment_methods/review?transaction_id=${paymentIntent.id}`,
-    // });
+    const line_items = products.map((product) => ({
+      price_data: {
+        currency: "usd", // Set your currency here
+        product_data: {
+          images: [product.thumbnail],
+          name: product.title,
+        },
+        unit_amount: Math.round(parseFloat(product.price) * 100),
+      },
+      quantity: product.quantity,
+    }));
+
+    try {
+      const session = await stripe.checkout.sessions.create({
+        payment_method_types: ["card"],
+        line_items,
+        mode: "payment",
+        success_url: `${req.headers.origin}/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${req.headers.origin}/cancel`,
+      });
+
+      res.status(200).json({ id: session.id });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/payment", async (req, res) => {  
+    const { id } = req.query;
+    if (!id) {
+      return res.status(400).json({ error: "Missing session ID" });
+    }
+    try {
+      const session = await stripe.checkout.sessions.retrieve(id, {
+        expand: ['line_items', 'customer_details', 'payment_intent'],
+      });
+      res.status(200).json(session);
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
   });
 
   app.post("/api/token", async (req, res) => {
     const data = req.body;
     const user = await userCollection.findOne({ email: data.email });
     if (!user) {
-      return sendResponse(res, 400, { error: true, message: "User does not exist" });
+      return sendResponse(res, 400, {
+        error: true,
+        message: "User does not exist",
+      });
     }
     const payload = {
       id: user._id,
@@ -100,13 +129,19 @@ async function run() {
       const { name, email, password } = req.body;
       const existingUser = await userCollection.findOne({ email });
       if (existingUser) {
-        return sendResponse(res, 400, { error: true, message: "User already exists" });
+        return sendResponse(res, 400, {
+          error: true,
+          message: "User already exists",
+        });
       }
       const hashedPassword = await bcrypt.hash(password, 10);
       const user = { name, email, password: hashedPassword };
       const createUser = await userCollection.insertOne(user);
       if (!createUser) {
-        return sendResponse(res, 400, { error: true, message: "User not created" });
+        return sendResponse(res, 400, {
+          error: true,
+          message: "User not created",
+        });
       }
       const payload = {
         name: user.name,
@@ -125,11 +160,17 @@ async function run() {
       const { email, password } = req.body;
       const user = await userCollection.findOne({ email });
       if (!user) {
-        return sendResponse(res, 400, { error: true, message: "User does not exist" });
+        return sendResponse(res, 400, {
+          error: true,
+          message: "User does not exist",
+        });
       }
       const isPasswordCorrect = await bcrypt.compare(password, user?.password);
       if (!isPasswordCorrect) {
-        return sendResponse(res, 400, { error: true, message: "Password is incorrect" });
+        return sendResponse(res, 400, {
+          error: true,
+          message: "Password is incorrect",
+        });
       }
       const payload = {
         name: user.name,
@@ -211,9 +252,9 @@ async function run() {
 
   app.get("/api/products/random", async (req, res) => {
     try {
-      const products = await productCollection.aggregate([
-        { $sample: { size: 10 } },
-      ]).toArray();
+      const products = await productCollection
+        .aggregate([{ $sample: { size: 10 } }])
+        .toArray();
       sendResponse(res, 200, products);
     } catch (error) {
       next(error);
@@ -223,7 +264,9 @@ async function run() {
   app.get("/api/products/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      const product = await productCollection.findOne({ _id: new ObjectId(id) });
+      const product = await productCollection.findOne({
+        _id: new ObjectId(id),
+      });
       sendResponse(res, 200, product);
     } catch (error) {
       next(error);
@@ -268,7 +311,10 @@ async function run() {
         _id: new ObjectId(id),
       });
       if (findproduct?.email !== email) {
-        return sendResponse(res, 403, { error: true, message: "Unauthorized access" });
+        return sendResponse(res, 403, {
+          error: true,
+          message: "Unauthorized access",
+        });
       }
       const result = await productCollection.updateOne(
         { _id: new ObjectId(id) },
@@ -291,7 +337,10 @@ async function run() {
         _id: new ObjectId(id),
       });
       if (product?.user !== email) {
-        return sendResponse(res, 403, { error: true, message: "Unauthorized access" });
+        return sendResponse(res, 403, {
+          error: true,
+          message: "Unauthorized access",
+        });
       }
       const result = await productCollection.deleteOne({
         _id: new ObjectId(id),
@@ -369,7 +418,10 @@ async function run() {
       const { email } = decodedToken;
       const user = await userCollection.findOne({ email });
       if (!user) {
-        return sendResponse(res, 404, { error: true, message: "User not found" });
+        return sendResponse(res, 404, {
+          error: true,
+          message: "User not found",
+        });
       }
       data.user = email;
       data.createdAt = new Date();
