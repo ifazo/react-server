@@ -261,34 +261,51 @@ async function run() {
 
   app.get("/api/products", async (req, res) => {
     try {
-      const { search, category, price, rating, skip, limit, sort } = req.query;
-
+      const { search, category, price, rating, skip, limit, sort, sortBy } = req.query;
+  
       let query = {};
+  
       if (search) {
         query.$or = [
           { title: { $regex: search, $options: "i" } },
           { description: { $regex: search, $options: "i" } },
         ];
-      } else if (category) {
-        query.category = category;
-      } else if (price) {
-        query.price = { $lte: parseInt(price) };
-      } else if (rating) {
-        query.rating = { $gte: parseInt(rating) };
       }
-
+  
+      if (category) {
+        query.category = category;
+      }
+  
+      if (price) {
+        const priceLimit = parseInt(price);
+        query.price = { $lte: priceLimit };
+      }
+  
+      if (rating) {
+        const ratingValue = parseInt(rating);
+        query.rating = { $gte: ratingValue };
+      }
+  
+      const totalProducts = await productCollection.countDocuments(query);
       let cursor = productCollection.find(query);
-
-      if (skip) cursor = cursor.skip(parseInt(skip));
-      if (limit) cursor = cursor.limit(parseInt(limit));
-      if (sort) cursor = cursor.sort({ title: sort === "asc" ? 1 : -1 });
-
+  
+      cursor = cursor.skip(parseInt(skip)).limit(parseInt(limit));
+  
+      if (sortBy && sort) {
+        const sortDirection = sort === "asc" ? 1 : -1;
+        const sortFields = { [sortBy]: sortDirection };
+        cursor = cursor.sort(sortFields);
+      }
+  
       const products = await cursor.toArray();
-      sendResponse(res, 200, products);
+  
+      sendResponse(res, 200, { products, totalProducts });
     } catch (error) {
-      next(error);
+      console.error(error);
+      sendResponse(res, 500, { message: "Internal Server Error" });
     }
   });
+  
 
   app.get("/api/products/random", async (req, res) => {
     try {
