@@ -61,11 +61,16 @@ async function run() {
   });
 
   app.post("/api/payment", async (req, res) => {
-    const { products } = req.body;
+    const { products, name, email } = req.body;
 
-    const line_items = products.map((product) => ({
+    const customer = await stripe.customers.create({
+      email,
+      name,
+    });
+
+    const items = products.map((product) => ({
       price_data: {
-        currency: "usd", // Set your currency here
+        currency: "usd",
         product_data: {
           images: [product.thumbnail],
           name: product.title,
@@ -78,30 +83,65 @@ async function run() {
     try {
       const session = await stripe.checkout.sessions.create({
         payment_method_types: ["card"],
-        line_items,
+        line_items: items,
         mode: "payment",
+        customer: customer.id,
         success_url: `${req.headers.origin}/success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${req.headers.origin}/cancel`,
       });
 
-      res.status(200).json({ id: session.id });
+      if (!session) {
+        return res.status(400).json({ error: "Session not created" });
+      }
+      else {
+        const order = {
+          user: name,
+          email,
+          products,
+          total: products.reduce(
+            (acc, product) => acc + product.price * product.quantity,
+            0
+          ),
+          status: "pending",
+          createdAt: new Date(),
+        };
+        await orderCollection.insertOne(order); 
+      }
+
+      sendResponse(res, 200, { id: session.id });
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      next(error);
     }
   });
 
-  app.get("/api/payment", async (req, res) => {  
+  app.get("/api/payment", async (req, res) => {
     const { id } = req.query;
     if (!id) {
       return res.status(400).json({ error: "Missing session ID" });
     }
     try {
       const session = await stripe.checkout.sessions.retrieve(id, {
-        expand: ['line_items', 'customer_details', 'payment_intent'],
+        expand: ["line_items", "customer_details", "payment_intent"],
       });
-      res.status(200).json(session);
+
+      sendResponse(res, 200, session);
     } catch (error) {
-      res.status(500).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  app.get("/api/orders", async (req, res) => {
+    const { email } = req.query;
+
+    if (!email) {
+      return res.status(400).json({ error: "Missing email" });
+    }
+    
+    try {
+      const orders = await orderCollection.find({ email }).toArray();
+      sendResponse(res, 200, orders);
+    } catch (error) {
+      next(error);
     }
   });
 
